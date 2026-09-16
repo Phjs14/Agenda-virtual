@@ -30,6 +30,7 @@
   --pauta:34px;
   --ui:'Nunito',system-ui,-apple-system,'Segoe UI',sans-serif;
   --mao:'Caveat',cursive;
+  --acento:#3B5A8A;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -82,7 +83,7 @@ body{
   padding-bottom:calc(76px + env(safe-area-inset-bottom));
 }
 button{font-family:inherit;cursor:pointer}
-:focus-visible{outline:3px solid var(--tinta);outline-offset:2px;border-radius:6px}
+:focus-visible{outline:3px solid var(--acento);outline-offset:2px;border-radius:6px}
 @media (prefers-reduced-motion: reduce){*{animation:none!important;transition:none!important}}
 
 .wrap{max-width:560px;margin:0 auto;padding:14px 14px 0}
@@ -208,7 +209,7 @@ button{font-family:inherit;cursor:pointer}
 .linha-item.feito .txt{opacity:.45;text-decoration:line-through;text-decoration-thickness:2px}
 .linha-item .marca{
   background:linear-gradient(transparent 55%,var(--cor,#ffe08a) 55%);
-  padding:0 2px;border-radius:2px
+  padding:0 2px;border-radius:2px;color:#1b1b1b
 }
 .linha-item .obs{display:block;font-size:19px;color:var(--tinta-fraca);line-height:var(--pauta)}
 .folha-vazia{
@@ -236,8 +237,8 @@ button{font-family:inherit;cursor:pointer}
   font-size:15px;color:var(--texto);padding:0
 }
 .dia.fora{opacity:.25}
-.dia.hoje{background:var(--tinta);color:#fff;font-weight:800}
-.dia.sel{box-shadow:inset 0 0 0 2px var(--tinta)}
+.dia.hoje{background:var(--acento);color:#fff;font-weight:800}
+.dia.sel{box-shadow:inset 0 0 0 2px var(--acento)}
 .dia .pontos{display:flex;gap:3px;height:6px}
 .dia .p{width:5px;height:5px;border-radius:50%;background:var(--tinta-fraca)}
 .dia .p.atrasada{background:var(--atrasada)}
@@ -277,8 +278,8 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
   position:fixed;right:max(16px,calc(50% - 280px + 16px));
   bottom:calc(88px + env(safe-area-inset-bottom));
   width:58px;height:58px;border-radius:50%;border:0;
-  background:var(--tinta);color:#fff;font-size:30px;line-height:1;
-  box-shadow:0 8px 20px rgba(38,57,92,.35);z-index:30
+  background:var(--acento);color:#fff;font-size:30px;line-height:1;
+  box-shadow:0 8px 20px rgba(0,0,0,.35);z-index:30
 }
 
 /* ---------- abas ---------- */
@@ -293,7 +294,7 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
   font-size:11px;font-weight:700;padding:4px 0;position:relative
 }
 .abas button .ic{font-size:20px;line-height:1}
-.abas button.ativa{color:var(--tinta)}
+.abas button.ativa{color:var(--acento)}
 .abas .badge{
   position:absolute;top:0;right:50%;transform:translateX(18px);
   background:var(--atrasada);color:#fff;font-size:10px;font-weight:800;
@@ -317,11 +318,11 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
   background:var(--superficie);border:1px solid var(--borda);border-radius:20px;
   padding:7px 13px;font-size:14px;font-weight:600;color:var(--texto)
 }
-.chip.ativo{background:var(--tinta);border-color:var(--tinta);color:#fff}
+.chip.ativo{background:var(--acento);border-color:var(--acento);color:#fff}
 .acoes{display:flex;gap:10px;margin-top:6px}
 .btn{
   flex:1;border:0;border-radius:12px;padding:14px;font-size:16px;font-weight:800;
-  background:var(--tinta);color:#fff
+  background:var(--acento);color:#fff
 }
 .btn.sec{background:transparent;border:1px solid var(--borda);color:var(--texto)}
 .btn.perigo{background:transparent;border:1px solid var(--atrasada);color:var(--atrasada);flex:0 0 52px;font-size:18px}
@@ -330,7 +331,7 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
 .toast{
   position:fixed;left:50%;transform:translateX(-50%);
   bottom:calc(96px + env(safe-area-inset-bottom));
-  background:var(--tinta);color:#fff;padding:11px 18px;border-radius:24px;
+  background:var(--acento);color:#fff;padding:11px 18px;border-radius:24px;
   font-size:14px;font-weight:600;z-index:60;box-shadow:var(--sombra)
 }
 </style>
@@ -535,7 +536,7 @@ function id(){ return Date.now().toString(36)+Math.random().toString(36).slice(2
 // Preencha os dois valores abaixo depois de criar seu projeto em supabase.com
 // (Configurações do projeto → API → Project URL / anon public key).
 // Deixando em branco, o app continua funcionando só neste aparelho, como na Fase 1.
-var SUPABASE_URL="https://djeosnwexfhqaslavync.supabase.co";
+var BASE_URL="https://djeosnwexfhqaslavync.supabase.co";
 var SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqZW9zbndleGZocWFzbGF2eW5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUxODg1ODMsImV4cCI6MjEwMDc2NDU4M30.M4pEH6xRs6t1pyQRKBRGOfbmWlWqR_bv3L98ndNkLto";
 
 var sb=null, sessao=null;
