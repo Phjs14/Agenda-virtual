@@ -1,6 +1,23 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
+<!-- Consent Mode: começa tudo negado até a pessoa aceitar o banner de cookies -->
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){ dataLayer.push(arguments); }
+gtag('consent','default',{
+  'analytics_storage':'denied',
+  'ad_storage':'denied',
+  'ad_user_data':'denied',
+  'ad_personalization':'denied'
+});
+</script>
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-MCW9158RCP"></script>
+<script>
+gtag('js', new Date());
+gtag('config', 'G-MCW9158RCP');
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Agenda</title>
@@ -343,6 +360,16 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
   background:var(--acento);color:#fff;padding:11px 18px;border-radius:24px;
   font-size:14px;font-weight:600;z-index:60;box-shadow:var(--sombra)
 }
+
+.cookies{
+  position:fixed;left:0;right:0;bottom:calc(76px + env(safe-area-inset-bottom));
+  z-index:70;background:var(--superficie);border-top:1px solid var(--borda);
+  box-shadow:var(--sombra);padding:14px 16px;
+  display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between
+}
+.cookies p{margin:0;font-size:13px;color:var(--texto-fraco);line-height:1.4;flex:1 1 220px}
+.cookies .acoes{display:flex;gap:8px;flex:0 0 auto;margin:0}
+.cookies .btn{padding:9px 16px;font-size:14px;flex:none}
 </style>
 </head>
 <body>
@@ -467,11 +494,24 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
       </div>
       <textarea id="backup" class="oculto" style="margin-top:10px" placeholder="Cole aqui o backup e toque em Restaurar de novo"></textarea>
     </div>
+
+    <p style="text-align:center;font-size:12px;color:var(--texto-fraco);margin:4px 0 0">
+      <a href="privacidade.html" style="color:inherit">Política de Privacidade</a> ·
+      <a href="termos.html" style="color:inherit">Termos de Uso</a>
+    </p>
   </section>
 
 </main>
 
 <button class="mais" id="btn-novo" aria-label="Escrever atividade">+</button>
+
+<div class="cookies oculto" id="cookies-banner">
+  <p>Usamos o Google Analytics pra entender como o app é usado. Nenhum anúncio ainda, isso é só estatística de uso. <a href="privacidade.html" style="color:inherit;text-decoration:underline">Saiba mais</a>.</p>
+  <div class="acoes">
+    <button type="button" class="btn sec" id="cookies-recusar">Recusar</button>
+    <button type="button" class="btn" id="cookies-aceitar">Aceitar</button>
+  </div>
+</div>
 
 <nav class="abas">
   <button type="button" class="ativa" data-tela="hoje"><span class="ic">📌</span>Hoje<span class="badge oculto" id="badge">0</span></button>
@@ -540,6 +580,32 @@ function salvar(){
   catch(e){ toast("Não consegui salvar neste navegador"); }
 }
 function id(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+
+/* ---------- consentimento de cookies (Analytics) ---------- */
+var CHAVE_COOKIES="agenda.cookies";
+
+function iniciarCookies(){
+  var estado;
+  try{ estado=localStorage.getItem(CHAVE_COOKIES); }catch(e){ estado=null; }
+
+  if(estado==="aceito"){
+    if(window.gtag) gtag('consent','update',{'analytics_storage':'granted'});
+    return;
+  }
+  if(estado==="recusado") return; // já decidiu, não pergunta de novo
+
+  document.getElementById("cookies-banner").classList.remove("oculto");
+}
+
+document.getElementById("cookies-aceitar").addEventListener("click",function(){
+  try{ localStorage.setItem(CHAVE_COOKIES,"aceito"); }catch(e){}
+  if(window.gtag) gtag('consent','update',{'analytics_storage':'granted'});
+  document.getElementById("cookies-banner").classList.add("oculto");
+});
+document.getElementById("cookies-recusar").addEventListener("click",function(){
+  try{ localStorage.setItem(CHAVE_COOKIES,"recusado"); }catch(e){}
+  document.getElementById("cookies-banner").classList.add("oculto");
+});
 
 /* ---------- nuvem (Supabase) ---------- */
 // Preencha os dois valores abaixo depois de criar seu projeto em supabase.com
@@ -1202,6 +1268,7 @@ carregar();
 aplicarTema();
 pintarTudo();
 iniciarNuvem();
+iniciarCookies();
 })();
 </script>
 
