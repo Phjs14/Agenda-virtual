@@ -660,16 +660,48 @@ function baixarDaNuvem(){
       });
     })
     .then(function(materias){
-      dados.materias=materias.map(function(m){return {id:m.id,nome:m.nome,cor:m.cor};});
+      var pendentesMat=dados.materias.filter(function(m){ return m.pendenteNuvem; });
+      dados.materias=materias.map(function(m){return {id:m.id,nome:m.nome,cor:m.cor};}).concat(pendentesMat);
       return sb.from("atividades").select("*").order("criado_em");
     })
     .then(function(ra){
       if(ra.error) throw ra.error;
-      dados.atividades=ra.data.map(linhaParaAtividade);
+      // preserva o que foi criado/editado aqui e ainda não confirmou na nuvem,
+      // pra uma sincronização em segundo plano não apagar dado local recente
+      var pendentes=dados.atividades.filter(function(a){ return a.pendenteNuvem; });
+      dados.atividades=ra.data.map(linhaParaAtividade).concat(pendentes);
       salvar(); pintarTudo();
       toast("Sincronizado");
+      sincronizarPendentes();
     })
     .catch(function(){ toast("Não consegui buscar seus dados na nuvem"); });
+}
+
+function sincronizarPendentes(){
+  if(!nuvemAtiva()) return;
+
+  dados.materias.filter(function(m){ return m.pendenteNuvem; }).forEach(function(m){
+    sb.from("materias").insert({user_id:sessao.user.id,nome:m.nome,cor:m.cor}).select().single()
+      .then(function(r){
+        if(r.error) return; // tenta de novo na próxima sincronização
+        var antigoId=m.id;
+        m.id=r.data.id; m.pendenteNuvem=false;
+        dados.atividades.forEach(function(a){ if(a.materia===antigoId) a.materia=r.data.id; });
+        salvar(); pintarTudo();
+      });
+  });
+
+  dados.atividades.filter(function(a){ return a.pendenteNuvem; }).forEach(function(a){
+    sb.from("atividades").insert({
+      user_id:sessao.user.id, titulo:a.titulo, data:a.data,
+      materia_id:a.materia||null, obs:a.obs||null,
+      concluida:a.concluida, concluida_em:a.concluidaEm?new Date(a.concluidaEm).toISOString():null
+    }).select().single().then(function(r){
+      if(r.error) return; // tenta de novo na próxima sincronização
+      a.id=r.data.id; a.pendenteNuvem=false;
+      salvar();
+    });
+  });
 }
 
 function pintarConta(){
@@ -1073,7 +1105,8 @@ function salvarForm(){
   }else{
     var nova={
       id:id(), titulo:titulo, data:data, materia:materiaSel,
-      obs:obsVal, concluida:false, concluidaEm:null, criado:Date.now()
+      obs:obsVal, concluida:false, concluidaEm:null, criado:Date.now(),
+      pendenteNuvem:nuvemAtiva()
     };
     dados.atividades.push(nova);
     if(tela==="agenda") diaFolha=data;
@@ -1084,9 +1117,9 @@ function salvarForm(){
         user_id:sessao.user.id, titulo:titulo, data:data,
         materia_id:materiaSel||null, obs:obsVal||null
       }).select().single().then(function(r){
-        if(r.error){ toast("Salvo só neste aparelho — não sincronizou"); return; }
+        if(r.error){ toast("Salvo só neste aparelho — tentando sincronizar depois"); return; }
         var local=porId(nova.id);
-        if(local) local.id=r.data.id; // troca o id local pelo id oficial da nuvem
+        if(local){ local.id=r.data.id; local.pendenteNuvem=false; salvar(); }
       });
     }
   }
@@ -1184,15 +1217,15 @@ document.getElementById("mat-add").addEventListener("click",function(){
   var n=document.getElementById("mat-nome").value.trim();
   var cor=document.getElementById("mat-cor").value;
   if(!n){ toast("Escreva o nome da matéria"); return; }
-  var nova={id:id(),nome:n,cor:cor};
+  var nova={id:id(),nome:n,cor:cor,pendenteNuvem:nuvemAtiva()};
   dados.materias.push(nova);
   document.getElementById("mat-nome").value="";
   salvar(); pintarMais(); toast("Matéria criada");
   if(nuvemAtiva()){
     sb.from("materias").insert({user_id:sessao.user.id,nome:n,cor:cor}).select().single().then(function(r){
-      if(r.error){ toast("Salva só neste aparelho — não sincronizou"); return; }
+      if(r.error){ toast("Salva só neste aparelho — tentando sincronizar depois"); return; }
       var local=dados.materias.filter(function(m){return m.id===nova.id;})[0];
-      if(local) local.id=r.data.id;
+      if(local){ local.id=r.data.id; local.pendenteNuvem=false; salvar(); }
     });
   }
 });
@@ -1269,6 +1302,7 @@ aplicarTema();
 pintarTudo();
 iniciarNuvem();
 iniciarCookies();
+window.addEventListener("online",sincronizarPendentes);
 })();
 </script>
 
