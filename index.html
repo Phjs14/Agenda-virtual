@@ -499,6 +499,7 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
       <a href="privacidade.html" style="color:inherit">Política de Privacidade</a> ·
       <a href="termos.html" style="color:inherit">Termos de Uso</a>
     </p>
+    <p id="versao-app" style="text-align:center;font-size:11px;color:var(--texto-fraco);margin:6px 0 0;opacity:.6"></p>
   </section>
 
 </main>
@@ -582,6 +583,8 @@ function salvar(){
   try{ localStorage.setItem(CHAVE,JSON.stringify(dados)); }
   catch(e){ toast("Não consegui salvar neste navegador"); }
 }
+var VERSAO_APP="2026-09-23.3";
+
 function id(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
 // nunca deixa null/undefined virar a palavra "null" quando cai num
@@ -1321,6 +1324,7 @@ aplicarTema();
 pintarTudo();
 iniciarNuvem();
 iniciarCookies();
+document.getElementById("versao-app").textContent="versão "+VERSAO_APP;
 window.addEventListener("online",sincronizarPendentes);
 
 // toda vez que a pessoa volta pro app (desbloqueia o celular, troca de aba
