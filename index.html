@@ -583,7 +583,7 @@ function salvar(){
   try{ localStorage.setItem(CHAVE,JSON.stringify(dados)); }
   catch(e){ toast("Não consegui salvar neste navegador"); }
 }
-var VERSAO_APP="2026-09-23.4";
+var VERSAO_APP="2026-09-23.5";
 
 function id(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
@@ -627,6 +627,8 @@ var SUPABASE_URL="https://djeosnwexfhqaslavync.supabase.co";
 var SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqZW9zbndleGZocWFzbGF2eW5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUxODg1ODMsImV4cCI6MjEwMDc2NDU4M30.M4pEH6xRs6t1pyQRKBRGOfbmWlWqR_bv3L98ndNkLto";
 
 var sb=null, sessao=null;
+var operacoesEmVoo={};  // id -> true: edição/conclusão sendo enviada agora
+var exclusoesEmVoo={};  // id -> true: exclusão sendo enviada agora
 
 function nuvemConfigurada(){ return !!(SUPABASE_URL && SUPABASE_ANON_KEY); }
 function nuvemAtiva(){ return !!(sb && sessao); }
@@ -681,10 +683,27 @@ function baixarDaNuvem(silencioso){
     })
     .then(function(ra){
       if(ra.error) throw ra.error;
-      // preserva o que foi criado/editado aqui e ainda não confirmou na nuvem,
-      // pra uma sincronização em segundo plano não apagar dado local recente
+      // preserva o que foi criado aqui e ainda não confirmou na nuvem
       var pendentes=dados.atividades.filter(function(a){ return a.pendenteNuvem; });
-      dados.atividades=ra.data.map(linhaParaAtividade).concat(pendentes);
+
+      // mapa das atividades locais atuais, pra defender o que está em voo
+      var locaisPorId={};
+      dados.atividades.forEach(function(a){ locaisPorId[a.id]=a; });
+
+      var doServidor=ra.data
+        // se uma exclusão pra este id ainda está sendo enviada, o servidor
+        // pode responder com a linha antiga por uma fração de segundo —
+        // ignora, pra não "ressuscitar" o que você acabou de apagar
+        .filter(function(row){ return !exclusoesEmVoo[row.id]; })
+        .map(function(row){
+          // se uma edição/conclusão pra este id ainda está sendo enviada,
+          // fica com a versão local (mais nova) em vez da versão do
+          // servidor (que ainda não recebeu essa mudança)
+          if(operacoesEmVoo[row.id] && locaisPorId[row.id]) return locaisPorId[row.id];
+          return linhaParaAtividade(row);
+        });
+
+      dados.atividades=doServidor.concat(pendentes);
       salvar(); pintarTudo();
       if(!silencioso) toast("Sincronizado");
       sincronizarPendentes();
@@ -1044,10 +1063,12 @@ function alternar(aid){
   salvar(); pintarTudo();
   if(a.concluida) toast("Feito ✓");
   if(nuvemAtiva()){
+    operacoesEmVoo[aid]=true;
     sb.from("atividades").update({
       concluida:a.concluida,
       concluida_em:a.concluida?new Date(a.concluidaEm).toISOString():null
     }).eq("id",aid).then(function(r){
+      delete operacoesEmVoo[aid];
       if(r.error) toast("Não sincronizou: "+r.error.message);
     });
   }
@@ -1119,9 +1140,11 @@ function salvarForm(){
     salvar(); fecharModal(); pintarTudo();
     toast("Atividade salva");
     if(nuvemAtiva()){
+      operacoesEmVoo[aid]=true;
       sb.from("atividades").update({
         titulo:titulo, data:data, materia_id:materiaSel||null, obs:obsVal||null
       }).eq("id",aid).then(function(r){
+        delete operacoesEmVoo[aid];
         if(r.error) toast("Não sincronizou: "+r.error.message);
       });
     }
@@ -1154,7 +1177,9 @@ function excluir(){
   dados.atividades=dados.atividades.filter(function(a){return a.id!==aid;});
   salvar(); fecharModal(); pintarTudo(); toast("Atividade excluída");
   if(nuvemAtiva()){
+    exclusoesEmVoo[aid]=true;
     sb.from("atividades").delete().eq("id",aid).then(function(r){
+      delete exclusoesEmVoo[aid];
       if(r.error) toast("Não sincronizou: "+r.error.message);
     });
   }
