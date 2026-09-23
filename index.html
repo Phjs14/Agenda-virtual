@@ -684,8 +684,9 @@ function baixarDaNuvem(silencioso){
 function sincronizarPendentes(){
   if(!nuvemAtiva()) return;
 
-  dados.materias.filter(function(m){ return m.pendenteNuvem; }).forEach(function(m){
-    sb.from("materias").insert({user_id:sessao.user.id,nome:m.nome,cor:m.cor}).select().single()
+  var materiasPendentes=dados.materias.filter(function(m){ return m.pendenteNuvem; });
+  var promessasMaterias=materiasPendentes.map(function(m){
+    return sb.from("materias").insert({user_id:sessao.user.id,nome:m.nome,cor:m.cor}).select().single()
       .then(function(r){
         if(r.error) return; // tenta de novo na próxima sincronização
         var antigoId=m.id;
@@ -695,15 +696,20 @@ function sincronizarPendentes(){
       });
   });
 
-  dados.atividades.filter(function(a){ return a.pendenteNuvem; }).forEach(function(a){
-    sb.from("atividades").insert({
-      user_id:sessao.user.id, titulo:a.titulo, data:a.data,
-      materia_id:a.materia||null, obs:a.obs||null,
-      concluida:a.concluida, concluida_em:a.concluidaEm?new Date(a.concluidaEm).toISOString():null
-    }).select().single().then(function(r){
-      if(r.error) return; // tenta de novo na próxima sincronização
-      a.id=r.data.id; a.pendenteNuvem=false;
-      salvar();
+  // só tenta as atividades depois que as matérias pendentes terminarem —
+  // senão uma atividade pode tentar usar o id antigo (ainda não trocado
+  // pelo id de verdade) de uma matéria que também estava pendente
+  Promise.all(promessasMaterias).then(function(){
+    dados.atividades.filter(function(a){ return a.pendenteNuvem; }).forEach(function(a){
+      sb.from("atividades").insert({
+        user_id:sessao.user.id, titulo:a.titulo, data:a.data,
+        materia_id:a.materia||null, obs:a.obs||null,
+        concluida:a.concluida, concluida_em:a.concluidaEm?new Date(a.concluidaEm).toISOString():null
+      }).select().single().then(function(r){
+        if(r.error) return; // tenta de novo na próxima sincronização
+        a.id=r.data.id; a.pendenteNuvem=false;
+        salvar();
+      });
     });
   });
 }
@@ -980,7 +986,7 @@ function pintarMais(){
       salvar(); pintarTudo(); toast("Matéria excluída");
       if(nuvemAtiva()){
         sb.from("materias").delete().eq("id",m.id).then(function(r){
-          if(r.error) toast("Não sincronizou a exclusão da matéria");
+          if(r.error) toast("Não sincronizou: "+r.error.message);
         });
       }
     });
@@ -1030,7 +1036,7 @@ function alternar(aid){
       concluida:a.concluida,
       concluida_em:a.concluida?new Date(a.concluidaEm).toISOString():null
     }).eq("id",aid).then(function(r){
-      if(r.error) toast("Não sincronizou — tentando de novo mais tarde");
+      if(r.error) toast("Não sincronizou: "+r.error.message);
     });
   }
 }
@@ -1103,7 +1109,7 @@ function salvarForm(){
       sb.from("atividades").update({
         titulo:titulo, data:data, materia_id:materiaSel||null, obs:obsVal||null
       }).eq("id",editando).then(function(r){
-        if(r.error) toast("Não sincronizou — tentando de novo mais tarde");
+        if(r.error) toast("Não sincronizou: "+r.error.message);
       });
     }
   }else{
@@ -1121,7 +1127,7 @@ function salvarForm(){
         user_id:sessao.user.id, titulo:titulo, data:data,
         materia_id:materiaSel||null, obs:obsVal||null
       }).select().single().then(function(r){
-        if(r.error){ toast("Salvo só neste aparelho — tentando sincronizar depois"); return; }
+        if(r.error){ toast("Salvo só neste aparelho: "+r.error.message); return; }
         var local=porId(nova.id);
         if(local){ local.id=r.data.id; local.pendenteNuvem=false; salvar(); }
       });
@@ -1136,7 +1142,7 @@ function excluir(){
   salvar(); fecharModal(); pintarTudo(); toast("Atividade excluída");
   if(nuvemAtiva()){
     sb.from("atividades").delete().eq("id",aid).then(function(r){
-      if(r.error) toast("Não sincronizou a exclusão");
+      if(r.error) toast("Não sincronizou: "+r.error.message);
     });
   }
 }
@@ -1227,7 +1233,7 @@ document.getElementById("mat-add").addEventListener("click",function(){
   salvar(); pintarMais(); toast("Matéria criada");
   if(nuvemAtiva()){
     sb.from("materias").insert({user_id:sessao.user.id,nome:n,cor:cor}).select().single().then(function(r){
-      if(r.error){ toast("Salva só neste aparelho — tentando sincronizar depois"); return; }
+      if(r.error){ toast("Salva só neste aparelho: "+r.error.message); return; }
       var local=dados.materias.filter(function(m){return m.id===nova.id;})[0];
       if(local){ local.id=r.data.id; local.pendenteNuvem=false; salvar(); }
     });
