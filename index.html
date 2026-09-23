@@ -644,7 +644,10 @@ function linhaParaAtividade(a){
   };
 }
 
-function baixarDaNuvem(){
+var sincronizandoAgora=false;
+function baixarDaNuvem(silencioso){
+  if(sincronizandoAgora) return Promise.resolve();
+  sincronizandoAgora=true;
   return sb.from("materias").select("*").order("criado_em")
     .then(function(rm){
       if(rm.error) throw rm.error;
@@ -671,10 +674,11 @@ function baixarDaNuvem(){
       var pendentes=dados.atividades.filter(function(a){ return a.pendenteNuvem; });
       dados.atividades=ra.data.map(linhaParaAtividade).concat(pendentes);
       salvar(); pintarTudo();
-      toast("Sincronizado");
+      if(!silencioso) toast("Sincronizado");
       sincronizarPendentes();
+      sincronizandoAgora=false;
     })
-    .catch(function(){ toast("Não consegui buscar seus dados na nuvem"); });
+    .catch(function(){ if(!silencioso) toast("Não consegui buscar seus dados na nuvem"); sincronizandoAgora=false; });
 }
 
 function sincronizarPendentes(){
@@ -1303,6 +1307,16 @@ pintarTudo();
 iniciarNuvem();
 iniciarCookies();
 window.addEventListener("online",sincronizarPendentes);
+
+// toda vez que a pessoa volta pro app (desbloqueia o celular, troca de aba
+// e volta, etc.), busca de novo na nuvem — assim o que foi criado em
+// outro aparelho aparece sem precisar fechar e abrir o app de novo.
+document.addEventListener("visibilitychange",function(){
+  if(document.visibilityState==="visible" && nuvemAtiva()) baixarDaNuvem(true);
+});
+window.addEventListener("focus",function(){
+  if(nuvemAtiva()) baixarDaNuvem(true);
+});
 })();
 </script>
 
@@ -1310,6 +1324,15 @@ window.addEventListener("online",sincronizarPendentes);
 if("serviceWorker" in navigator){
   window.addEventListener("load", function(){
     navigator.serviceWorker.register("sw.js").catch(function(){ /* segue funcionando sem SW */ });
+  });
+
+  // se uma versão nova do app assumir enquanto a aba já está aberta,
+  // recarrega sozinha uma vez pra rodar o código mais recente
+  var jaRecarregou=false;
+  navigator.serviceWorker.addEventListener("controllerchange",function(){
+    if(jaRecarregou) return;
+    jaRecarregou=true;
+    window.location.reload();
   });
 }
 </script>
