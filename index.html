@@ -574,12 +574,21 @@ function carregar(){
       {id:id(),nome:"História",cor:"#F8B9C6"}
     ];
   }
+  // conserta dados antigos que ficaram com a palavra "null" no lugar de vazio
+  dados.atividades.forEach(function(a){ a.materia=materiaValida(a.materia); });
+  dados.materias=dados.materias.filter(function(m){ return materiaValida(m.id); });
 }
 function salvar(){
   try{ localStorage.setItem(CHAVE,JSON.stringify(dados)); }
   catch(e){ toast("Não consegui salvar neste navegador"); }
 }
 function id(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+
+// nunca deixa null/undefined virar a palavra "null" quando cai num
+// atributo .value do DOM ou num campo que vai pro Supabase
+function materiaValida(v){
+  return (v && v!=="null" && v!=="undefined") ? v : "";
+}
 
 /* ---------- consentimento de cookies (Analytics) ---------- */
 var CHAVE_COOKIES="agenda.cookies";
@@ -703,7 +712,7 @@ function sincronizarPendentes(){
     dados.atividades.filter(function(a){ return a.pendenteNuvem; }).forEach(function(a){
       sb.from("atividades").insert({
         user_id:sessao.user.id, titulo:a.titulo, data:a.data,
-        materia_id:a.materia||null, obs:a.obs||null,
+        materia_id:materiaValida(a.materia)||null, obs:a.obs||null,
         concluida:a.concluida, concluida_em:a.concluidaEm?new Date(a.concluidaEm).toISOString():null
       }).select().single().then(function(r){
         if(r.error) return; // tenta de novo na próxima sincronização
@@ -1052,10 +1061,10 @@ function abrirModal(aid){
   var sel=document.getElementById("f-materia");
   sel.innerHTML='<option value="">Sem matéria</option>';
   dados.materias.forEach(function(m){
-    var o=document.createElement("option"); o.value=m.id; o.textContent=m.nome;
+    var o=document.createElement("option"); o.value=materiaValida(m.id); o.textContent=m.nome;
     sel.appendChild(o);
   });
-  sel.value=a?(a.materia||""):"";
+  sel.value=a?materiaValida(a.materia):"";
 
   document.getElementById("f-excluir").classList.toggle("oculto",!a);
   pintarChips();
@@ -1095,7 +1104,7 @@ function pintarChips(){
 function salvarForm(){
   var titulo=document.getElementById("f-titulo").value.trim();
   var data=document.getElementById("f-data").value;
-  var materiaSel=document.getElementById("f-materia").value;
+  var materiaSel=materiaValida(document.getElementById("f-materia").value);
   var obsVal=document.getElementById("f-obs").value.trim();
   if(!titulo){ toast("Escreva o que é a atividade"); document.getElementById("f-titulo").focus(); return; }
   if(!data){ toast("Escolha o dia da entrega"); return; }
