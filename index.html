@@ -583,7 +583,7 @@ function salvar(){
   try{ localStorage.setItem(CHAVE,JSON.stringify(dados)); }
   catch(e){ toast("Não consegui salvar neste navegador"); }
 }
-var VERSAO_APP="2026-09-23.5";
+var VERSAO_APP="2026-09-23.6";
 
 function id(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
@@ -592,6 +592,13 @@ function id(){ return Date.now().toString(36)+Math.random().toString(36).slice(2
 function materiaValida(v){
   return (v && v!=="null" && v!=="undefined") ? v : "";
 }
+
+// true só se "v" tem o formato de um id de verdade do Supabase (uuid).
+// Serve pra saber se um item já foi confirmado na nuvem sem depender de
+// nenhuma bandeira marcada no momento da criação (que pode falhar por
+// causa de timing — ex.: criar algo antes da sessão terminar de carregar).
+var REGEX_UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function idDeVerdade(v){ return typeof v==="string" && REGEX_UUID.test(v); }
 
 /* ---------- consentimento de cookies (Analytics) ---------- */
 var CHAVE_COOKIES="agenda.cookies";
@@ -677,14 +684,14 @@ function baixarDaNuvem(silencioso){
       });
     })
     .then(function(materias){
-      var pendentesMat=dados.materias.filter(function(m){ return m.pendenteNuvem; });
+      var pendentesMat=dados.materias.filter(function(m){ return m.pendenteNuvem || !idDeVerdade(m.id); });
       dados.materias=materias.map(function(m){return {id:m.id,nome:m.nome,cor:m.cor};}).concat(pendentesMat);
       return sb.from("atividades").select("*").order("criado_em");
     })
     .then(function(ra){
       if(ra.error) throw ra.error;
       // preserva o que foi criado aqui e ainda não confirmou na nuvem
-      var pendentes=dados.atividades.filter(function(a){ return a.pendenteNuvem; });
+      var pendentes=dados.atividades.filter(function(a){ return a.pendenteNuvem || !idDeVerdade(a.id); });
 
       // mapa das atividades locais atuais, pra defender o que está em voo
       var locaisPorId={};
@@ -715,7 +722,7 @@ function baixarDaNuvem(silencioso){
 function sincronizarPendentes(){
   if(!nuvemAtiva()) return;
 
-  var materiasPendentes=dados.materias.filter(function(m){ return m.pendenteNuvem; });
+  var materiasPendentes=dados.materias.filter(function(m){ return m.pendenteNuvem || !idDeVerdade(m.id); });
   var promessasMaterias=materiasPendentes.map(function(m){
     return sb.from("materias").insert({user_id:sessao.user.id,nome:m.nome,cor:m.cor}).select().single()
       .then(function(r){
@@ -731,7 +738,7 @@ function sincronizarPendentes(){
   // senão uma atividade pode tentar usar o id antigo (ainda não trocado
   // pelo id de verdade) de uma matéria que também estava pendente
   Promise.all(promessasMaterias).then(function(){
-    dados.atividades.filter(function(a){ return a.pendenteNuvem; }).forEach(function(a){
+    dados.atividades.filter(function(a){ return a.pendenteNuvem || !idDeVerdade(a.id); }).forEach(function(a){
       sb.from("atividades").insert({
         user_id:sessao.user.id, titulo:a.titulo, data:a.data,
         materia_id:materiaValida(a.materia)||null, obs:a.obs||null,
