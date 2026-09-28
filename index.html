@@ -477,9 +477,13 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
         </div>
       </div>
       <div id="conta-logado" class="oculto">
-        <p>Conectado como <strong id="conta-email"></strong>. Suas atividades estão sincronizadas.</p>
-        <button type="button" class="btn sec" id="c-sair">Sair da conta</button>
+        <p>Conectado como <strong id="conta-email"></strong>.</p>
+        <div class="acoes">
+          <button type="button" class="btn sec" id="c-sync">Sincronizar agora</button>
+          <button type="button" class="btn sec" id="c-sair">Sair da conta</button>
+        </div>
       </div>
+      <p id="sync-status" style="margin:10px 0 0;font-size:13px;color:var(--texto-fraco)"></p>
     </div>
 
     <div class="bloco">
@@ -555,50 +559,129 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
 "use strict";
 
 /* ---------- armazenamento ---------- */
-var CHAVE="agenda.v1";
-var dados={atividades:[],materias:[],config:{tema:"auto",avisoFechado:""}};
+/* @@A-INI */
+var CHAVE="agenda.v2";
+var CHAVE_ANTIGA="agenda.v1";
+var VERSAO_APP="2026-09-27.1";
 
-function carregar(){
-  try{
-    var bruto=localStorage.getItem(CHAVE);
-    if(bruto){
-      var d=JSON.parse(bruto);
-      dados.atividades=Array.isArray(d.atividades)?d.atividades:[];
-      dados.materias=Array.isArray(d.materias)?d.materias:[];
-      dados.config=Object.assign(dados.config,d.config||{});
-    }
-  }catch(e){ /* dados corrompidos: começa limpo em vez de travar */ }
-  if(!dados.materias.length){
-    dados.materias=[
-      {id:id(),nome:"Matemática",cor:"#FFD66B"},
-      {id:id(),nome:"Português",cor:"#A8E6CF"},
-      {id:id(),nome:"História",cor:"#F8B9C6"}
-    ];
-  }
-  // conserta dados antigos que ficaram com a palavra "null" no lugar de vazio
-  dados.atividades.forEach(function(a){ a.materia=materiaValida(a.materia); });
-  dados.materias=dados.materias.filter(function(m){ return materiaValida(m.id); });
+function novoDados(){
+  return {
+    atividades:[], materias:[],
+    // FILA DE ENVIO: tudo que mudou aqui e a nuvem ainda não confirmou.
+    // chave "a:<id>" (atividade) ou "m:<id>" (matéria) -> {op:"upsert"|"delete", n:contador}
+    // Fica salva junto com os dados, então sobrevive a fechar a aba/o app.
+    pendentes:{}, n:0,
+    dono:null,      // id do usuário dono deste cache (null = ninguém logou ainda)
+    semeado:false,  // já criou as matérias-padrão alguma vez?
+    config:{tema:"auto",avisoFechado:""}
+  };
 }
-function salvar(){
-  try{ localStorage.setItem(CHAVE,JSON.stringify(dados)); }
-  catch(e){ toast("Não consegui salvar neste navegador"); }
+var dados=novoDados();
+
+function uuid(){
+  if(window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+  var b=new Uint8Array(16), i;
+  if(window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(b);
+  else for(i=0;i<16;i++) b[i]=Math.floor(Math.random()*256);
+  b[6]=(b[6]&0x0f)|0x40; b[8]=(b[8]&0x3f)|0x80;
+  var h=Array.prototype.map.call(b,function(x){ return ("0"+x.toString(16)).slice(-2); }).join("");
+  return h.slice(0,8)+"-"+h.slice(8,12)+"-"+h.slice(12,16)+"-"+h.slice(16,20)+"-"+h.slice(20);
 }
-var VERSAO_APP="2026-09-23.6";
+var REGEX_UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function idDeVerdade(v){ return typeof v==="string" && REGEX_UUID.test(v); }
 
-function id(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
-
-// nunca deixa null/undefined virar a palavra "null" quando cai num
-// atributo .value do DOM ou num campo que vai pro Supabase
+// nunca deixa null/undefined virar a palavra "null" num atributo do DOM
 function materiaValida(v){
   return (v && v!=="null" && v!=="undefined") ? v : "";
 }
 
-// true só se "v" tem o formato de um id de verdade do Supabase (uuid).
-// Serve pra saber se um item já foi confirmado na nuvem sem depender de
-// nenhuma bandeira marcada no momento da criação (que pode falhar por
-// causa de timing — ex.: criar algo antes da sessão terminar de carregar).
-var REGEX_UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function idDeVerdade(v){ return typeof v==="string" && REGEX_UUID.test(v); }
+// registra "isto mudou aqui e precisa ir pra nuvem". O contador n serve pra
+// saber, depois do envio, se o item mudou de novo enquanto o pedido viajava.
+function marcar(tipo,idItem,op){
+  dados.n++;
+  dados.pendentes[tipo+":"+idItem]={op:op,n:dados.n};
+}
+
+function semear(){
+  [["Matemática","#FFD66B"],["Português","#A8E6CF"],["História","#F8B9C6"]].forEach(function(p){
+    var m={id:uuid(),nome:p[0],cor:p[1],padrao:true};
+    dados.materias.push(m);
+    marcar("m",m.id,"upsert");
+  });
+  dados.semeado=true;
+}
+
+// Lê dados de qualquer origem (formato antigo, backup...). Ids que não são
+// uuid ganham um uuid novo, e o item entra na fila (nunca foi confirmado).
+// novosIds=true força id novo pra tudo (usado ao restaurar backup).
+function importar(d,novosIds){
+  var r=novoDados();
+  function sujar(tipo,idItem){ r.n++; r.pendentes[tipo+":"+idItem]={op:"upsert",n:r.n}; }
+  var mapa={};
+  (Array.isArray(d.materias)?d.materias:[]).forEach(function(m){
+    if(!m || !m.nome) return;
+    var velho=m.id;
+    var novo=(!novosIds && idDeVerdade(velho))?velho:uuid();
+    mapa[velho]=novo;
+    r.materias.push({id:novo,nome:String(m.nome),cor:m.cor||"#FFD66B",padrao:!!m.padrao});
+    if(novosIds || !idDeVerdade(velho)) sujar("m",novo);
+  });
+  (Array.isArray(d.atividades)?d.atividades:[]).forEach(function(a){
+    if(!a || !a.titulo || !a.data) return;
+    var velho=a.id;
+    var novo=(!novosIds && idDeVerdade(velho))?velho:uuid();
+    var mat=materiaValida(a.materia);
+    if(mat && mapa[mat]) mat=mapa[mat];
+    r.atividades.push({
+      id:novo, titulo:String(a.titulo), data:String(a.data), materia:mat,
+      obs:a.obs||"", concluida:!!a.concluida,
+      concluidaEm:a.concluidaEm||null, criado:a.criado||Date.now()
+    });
+    if(novosIds || !idDeVerdade(velho) || a.pendenteNuvem) sujar("a",novo);
+  });
+  if(d.config && typeof d.config==="object") r.config=Object.assign(r.config,d.config);
+  return r;
+}
+
+function aplicarV2(d){
+  var r=novoDados();
+  r.atividades=Array.isArray(d.atividades)?d.atividades:[];
+  r.materias=Array.isArray(d.materias)?d.materias:[];
+  r.pendentes=(d.pendentes && typeof d.pendentes==="object")?d.pendentes:{};
+  r.n=+d.n||0;
+  r.dono=d.dono||null;
+  r.semeado=!!d.semeado;
+  r.config=Object.assign(r.config,d.config||{});
+  dados=r;
+}
+
+function carregar(){
+  var d=null;
+  try{ var b=localStorage.getItem(CHAVE); if(b) d=JSON.parse(b); }catch(e){ d=null; }
+  if(d && d.schema===2){
+    aplicarV2(d);
+  }else{
+    // primeira vez neste formato: migra do antigo (v1), se existir
+    var antigo=null;
+    try{ var b1=localStorage.getItem(CHAVE_ANTIGA); if(b1) antigo=JSON.parse(b1); }catch(e){ antigo=null; }
+    if(antigo && typeof antigo==="object"){ dados=importar(antigo,false); dados.semeado=true; }
+    else dados=novoDados();
+  }
+  dados.atividades.forEach(function(a){ a.materia=materiaValida(a.materia); });
+  if(!dados.semeado && !dados.materias.length) semear();
+  salvar();
+}
+
+function salvar(){
+  try{
+    localStorage.setItem(CHAVE,JSON.stringify(Object.assign({schema:2},dados)));
+    return true;
+  }catch(e){
+    toast("Não consegui salvar neste navegador");
+    return false;
+  }
+}
+/* @@A-FIM */
 
 /* ---------- consentimento de cookies (Analytics) ---------- */
 var CHAVE_COOKIES="agenda.cookies";
@@ -627,130 +710,249 @@ document.getElementById("cookies-recusar").addEventListener("click",function(){
 });
 
 /* ---------- nuvem (Supabase) ---------- */
-// Preencha os dois valores abaixo depois de criar seu projeto em supabase.com
-// (Configurações do projeto → API → Project URL / anon public key).
-// Deixando em branco, o app continua funcionando só neste aparelho, como na Fase 1.
+/* @@B-INI */
+// Como funciona (3 regras):
+// 1) Todo item tem id definitivo (uuid) desde que nasce — nada de "id provisório".
+// 2) Toda mudança entra na fila "dados.pendentes", gravada JUNTO com o dado.
+//    Fechar a aba no meio do envio não perde nada: a fila continua lá.
+// 3) Sincronizar = enviar a fila (upsert/delete, que podem repetir sem duplicar)
+//    -> baixar tudo -> mesclar, onde o que está na fila local SEMPRE vence.
 var SUPABASE_URL="https://djeosnwexfhqaslavync.supabase.co";
 var SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRqZW9zbndleGZocWFzbGF2eW5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUxODg1ODMsImV4cCI6MjEwMDc2NDU4M30.M4pEH6xRs6t1pyQRKBRGOfbmWlWqR_bv3L98ndNkLto";
 
 var sb=null, sessao=null;
-var operacoesEmVoo={};  // id -> true: edição/conclusão sendo enviada agora
-var exclusoesEmVoo={};  // id -> true: exclusão sendo enviada agora
-
 function nuvemConfigurada(){ return !!(SUPABASE_URL && SUPABASE_ANON_KEY); }
 function nuvemAtiva(){ return !!(sb && sessao); }
 
-function iniciarNuvem(){
-  if(!nuvemConfigurada() || !window.supabase) return;
-  sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
-  sb.auth.getSession().then(function(r){
-    sessao=r.data.session;
-    pintarConta();
-    if(sessao) baixarDaNuvem();
-  });
-  sb.auth.onAuthStateChange(function(_ev,s){
-    var mudouUsuario = (s?s.user.id:null)!==(sessao?sessao.user.id:null);
-    sessao=s;
-    pintarConta();
-    if(sessao && mudouUsuario) baixarDaNuvem();
-  });
-}
+var syncRodando=false, syncDeNovo=false, syncTimer=null;
+var statusSync={quando:null,erro:""};
 
 function linhaParaAtividade(a){
   return {
     id:a.id, titulo:a.titulo, data:a.data, materia:a.materia_id||"",
-    obs:a.obs||"", concluida:a.concluida,
+    obs:a.obs||"", concluida:!!a.concluida,
     concluidaEm:a.concluida_em?Date.parse(a.concluida_em):null,
     criado:a.criado_em?Date.parse(a.criado_em):Date.now()
   };
 }
-
-var sincronizandoAgora=false;
-function baixarDaNuvem(silencioso){
-  if(sincronizandoAgora) return Promise.resolve();
-  sincronizandoAgora=true;
-  return sb.from("materias").select("*").order("criado_em")
-    .then(function(rm){
-      if(rm.error) throw rm.error;
-      if(rm.data.length) return rm.data;
-      var padrao=[
-        {user_id:sessao.user.id,nome:"Matemática",cor:"#FFD66B"},
-        {user_id:sessao.user.id,nome:"Português",cor:"#A8E6CF"},
-        {user_id:sessao.user.id,nome:"História",cor:"#F8B9C6"}
-      ];
-      return sb.from("materias").insert(padrao).select().then(function(ri){
-        if(ri.error) throw ri.error;
-        return ri.data;
-      });
-    })
-    .then(function(materias){
-      var pendentesMat=dados.materias.filter(function(m){ return m.pendenteNuvem || !idDeVerdade(m.id); });
-      dados.materias=materias.map(function(m){return {id:m.id,nome:m.nome,cor:m.cor};}).concat(pendentesMat);
-      return sb.from("atividades").select("*").order("criado_em");
-    })
-    .then(function(ra){
-      if(ra.error) throw ra.error;
-      // preserva o que foi criado aqui e ainda não confirmou na nuvem
-      var pendentes=dados.atividades.filter(function(a){ return a.pendenteNuvem || !idDeVerdade(a.id); });
-
-      // mapa das atividades locais atuais, pra defender o que está em voo
-      var locaisPorId={};
-      dados.atividades.forEach(function(a){ locaisPorId[a.id]=a; });
-
-      var doServidor=ra.data
-        // se uma exclusão pra este id ainda está sendo enviada, o servidor
-        // pode responder com a linha antiga por uma fração de segundo —
-        // ignora, pra não "ressuscitar" o que você acabou de apagar
-        .filter(function(row){ return !exclusoesEmVoo[row.id]; })
-        .map(function(row){
-          // se uma edição/conclusão pra este id ainda está sendo enviada,
-          // fica com a versão local (mais nova) em vez da versão do
-          // servidor (que ainda não recebeu essa mudança)
-          if(operacoesEmVoo[row.id] && locaisPorId[row.id]) return locaisPorId[row.id];
-          return linhaParaAtividade(row);
-        });
-
-      dados.atividades=doServidor.concat(pendentes);
-      salvar(); pintarTudo();
-      if(!silencioso) toast("Sincronizado");
-      sincronizarPendentes();
-      sincronizandoAgora=false;
-    })
-    .catch(function(){ if(!silencioso) toast("Não consegui buscar seus dados na nuvem"); sincronizandoAgora=false; });
+function linhaDeAtividade(a,userId){
+  return {
+    id:a.id, user_id:userId, titulo:a.titulo, data:a.data,
+    materia_id:materiaValida(a.materia)||null, obs:a.obs||null,
+    concluida:!!a.concluida,
+    concluida_em:a.concluidaEm?new Date(a.concluidaEm).toISOString():null,
+    criado_em:new Date(a.criado||Date.now()).toISOString()
+  };
 }
 
-function sincronizarPendentes(){
+function iniciarNuvem(){
+  pintarConta();
+  if(!nuvemConfigurada() || !window.supabase) return;
+  sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY);
+  sb.auth.onAuthStateChange(function(ev,s){
+    var antes=sessao?sessao.user.id:null;
+    sessao=s;
+    pintarConta();
+    var depois=s?s.user.id:null;
+    if(depois && depois!==antes) pedirSync(0);
+  });
+  sb.auth.getSession().then(function(r){
+    if(!sessao && r.data && r.data.session){
+      sessao=r.data.session; pintarConta(); pedirSync(0);
+    }
+  });
+}
+
+// pede uma sincronização (vários pedidos seguidos viram um só)
+function pedirSync(ms){
+  pintarStatus();
   if(!nuvemAtiva()) return;
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(sincronizar,ms||0);
+}
 
-  var materiasPendentes=dados.materias.filter(function(m){ return m.pendenteNuvem || !idDeVerdade(m.id); });
-  var promessasMaterias=materiasPendentes.map(function(m){
-    return sb.from("materias").insert({user_id:sessao.user.id,nome:m.nome,cor:m.cor}).select().single()
-      .then(function(r){
-        if(r.error) return; // tenta de novo na próxima sincronização
-        var antigoId=m.id;
-        m.id=r.data.id; m.pendenteNuvem=false;
-        dados.atividades.forEach(function(a){ if(a.materia===antigoId) a.materia=r.data.id; });
-        salvar(); pintarTudo();
-      });
+// o cache local pertence a um usuário; se entrar outra conta, descarta o cache
+function garantirDono(userId){
+  if(dados.dono && dados.dono!==userId){
+    var cfg=dados.config;
+    dados=novoDados(); dados.config=cfg; dados.dono=userId;
+    salvar(); pintarTudo();
+  }else if(!dados.dono){
+    dados.dono=userId; salvar();   // dados criados sem conta passam a ser desta conta
+  }
+}
+
+function sincronizar(){
+  if(!nuvemAtiva()) return Promise.resolve();
+  if(syncRodando){ syncDeNovo=true; return Promise.resolve(); }
+  syncRodando=true; syncDeNovo=false;
+  pintarStatus();
+  var userId=sessao.user.id;
+  var falhas=[];
+  garantirDono(userId);
+  return enviarPendentes(userId)
+    .then(function(f){ falhas=f; return baixarEMesclar(); })
+    .then(function(){
+      if(falhas.length){ statusSync.erro=falhas[0].message||"erro ao enviar"; }
+      else{ statusSync.erro=""; statusSync.quando=Date.now(); }
+    })
+    .catch(function(e){ statusSync.erro=(e && e.message)?e.message:"sem conexão"; })
+    .then(function(){
+      syncRodando=false;
+      pintarStatus();
+      if(syncDeNovo) pedirSync(50);
+    });
+}
+
+// PASSO 1: manda pra nuvem tudo que está na fila. Devolve a lista de falhas.
+function enviarPendentes(userId){
+  var falhas=[];
+  var chaves=Object.keys(dados.pendentes);
+  if(!chaves.length) return Promise.resolve(falhas);
+
+  var upMat=[], upAti=[], delMat=[], delAti=[];
+  chaves.forEach(function(k){
+    var p=dados.pendentes[k], tipo=k.charAt(0), idItem=k.slice(2);
+    if(p.op==="delete"){ (tipo==="a"?delAti:delMat).push({k:k,id:idItem,n:p.n}); return; }
+    if(tipo==="m"){
+      var m=materia(idItem);
+      if(!m){ delete dados.pendentes[k]; return; }
+      upMat.push({k:k,n:p.n,linha:{id:m.id,user_id:userId,nome:m.nome,cor:m.cor}});
+    }else{
+      var a=porId(idItem);
+      if(!a){ delete dados.pendentes[k]; return; }
+      upAti.push({k:k,n:p.n,a:a,linha:linhaDeAtividade(a,userId)});
+    }
   });
 
-  // só tenta as atividades depois que as matérias pendentes terminarem —
-  // senão uma atividade pode tentar usar o id antigo (ainda não trocado
-  // pelo id de verdade) de uma matéria que também estava pendente
-  Promise.all(promessasMaterias).then(function(){
-    dados.atividades.filter(function(a){ return a.pendenteNuvem || !idDeVerdade(a.id); }).forEach(function(a){
-      sb.from("atividades").insert({
-        user_id:sessao.user.id, titulo:a.titulo, data:a.data,
-        materia_id:materiaValida(a.materia)||null, obs:a.obs||null,
-        concluida:a.concluida, concluida_em:a.concluidaEm?new Date(a.concluidaEm).toISOString():null
-      }).select().single().then(function(r){
-        if(r.error) return; // tenta de novo na próxima sincronização
-        a.id=r.data.id; a.pendenteNuvem=false;
-        salvar();
-      });
+  // só limpa da fila se o item NÃO mudou de novo enquanto o pedido viajava
+  function confirmado(item){
+    var p=dados.pendentes[item.k];
+    if(p && p.n===item.n){ delete dados.pendentes[item.k]; salvar(); }
+  }
+  function subir(tabela,item){
+    return sb.from(tabela).upsert(item.linha,{onConflict:"id"}).then(function(r){
+      if(!r.error){ confirmado(item); return; }
+      // matéria da atividade não existe mais na nuvem (apagada em outro aparelho)
+      if(tabela==="atividades" && r.error.code==="23503" && item.a.materia &&
+         !dados.pendentes["m:"+item.a.materia]){
+        item.a.materia=""; marcar("a",item.a.id,"upsert"); salvar(); syncDeNovo=true;
+      }
+      falhas.push(r.error);
     });
+  }
+  function apagar(tabela,item){
+    return sb.from(tabela).delete().eq("id",item.id).then(function(r){
+      if(!r.error) confirmado(item); else falhas.push(r.error);
+    });
+  }
+  function todos(lista,fn){ return Promise.all(lista.map(fn)); }
+
+  // ordem importa por causa da ligação atividade -> matéria
+  return todos(upMat,function(it){ return subir("materias",it); })
+    .then(function(){ return todos(upAti,function(it){ return subir("atividades",it); }); })
+    .then(function(){ return todos(delAti,function(it){ return apagar("atividades",it); }); })
+    .then(function(){ return todos(delMat,function(it){ return apagar("materias",it); }); })
+    .then(function(){ return falhas; });
+}
+
+// PASSO 2: baixa tudo da nuvem e mescla
+function baixarEMesclar(){
+  return Promise.all([
+    sb.from("materias").select("*").order("criado_em"),
+    sb.from("atividades").select("*").order("criado_em")
+  ]).then(function(rs){
+    if(rs[0].error) throw rs[0].error;
+    if(rs[1].error) throw rs[1].error;
+    mesclar(rs[0].data||[],rs[1].data||[]);
   });
 }
+
+// matérias novas ainda não enviadas (ex.: criadas sem conta) vs. as da conta
+function reconciliarMaterias(cMat){
+  var porNome={}, idsNuvem={};
+  cMat.forEach(function(m){
+    idsNuvem[m.id]=true;
+    porNome[String(m.nome).trim().toLowerCase()]=m.id;
+  });
+  var temNuvem=cMat.length>0;
+  dados.materias.slice().forEach(function(m){
+    var p=dados.pendentes["m:"+m.id];
+    if(idsNuvem[m.id] || !p || p.op!=="upsert") return;
+    var alvo=porNome[String(m.nome).trim().toLowerCase()];
+    var usada=dados.atividades.some(function(a){ return a.materia===m.id; });
+    if(alvo){
+      // a conta já tem uma matéria com esse nome: usa a dela, sem duplicar
+      dados.atividades.forEach(function(a){
+        if(a.materia===m.id){ a.materia=alvo; marcar("a",a.id,"upsert"); }
+      });
+    }else if(!(m.padrao && temNuvem && !usada)){
+      return; // matéria realmente nova: fica e será enviada
+    }
+    dados.materias=dados.materias.filter(function(o){ return o.id!==m.id; });
+    delete dados.pendentes["m:"+m.id];
+  });
+}
+
+// o que está na fila local SEMPRE vence; o resto vem da nuvem
+function mesclar(cMat,cAti){
+  reconciliarMaterias(cMat);
+  var pend=dados.pendentes;
+
+  var vistasM={}, novasM=[];
+  cMat.forEach(function(row){
+    var p=pend["m:"+row.id];
+    if(p && p.op==="delete") return;                    // apagada aqui, envio pendente
+    var loc=materia(row.id);
+    novasM.push((p && p.op==="upsert" && loc) ? loc : {id:row.id,nome:row.nome,cor:row.cor});
+    vistasM[row.id]=true;
+  });
+  dados.materias.forEach(function(m){
+    if(vistasM[m.id]) return;
+    var p=pend["m:"+m.id];
+    if(p && p.op==="upsert") novasM.push(m);            // nova, ainda não enviada
+    // senão: foi apagada em outro aparelho, então some daqui também
+  });
+  dados.materias=novasM;
+
+  var vistasA={}, novasA=[];
+  cAti.forEach(function(row){
+    var p=pend["a:"+row.id];
+    if(p && p.op==="delete") return;
+    var loc=porId(row.id);
+    novasA.push((p && p.op==="upsert" && loc) ? loc : linhaParaAtividade(row));
+    vistasA[row.id]=true;
+  });
+  dados.atividades.forEach(function(a){
+    if(vistasA[a.id]) return;
+    var p=pend["a:"+a.id];
+    if(p && p.op==="upsert") novasA.push(a);
+  });
+  dados.atividades=novasA;
+
+  // conta nova, sem nenhuma matéria: cria as padrão
+  if(!dados.materias.length && !dados.semeado){ semear(); syncDeNovo=true; }
+
+  salvar(); pintarTudo();
+}
+
+function pintarStatus(){
+  var el=document.getElementById("sync-status");
+  if(!el) return;
+  var n=Object.keys(dados.pendentes).length;
+  var txt="";
+  if(!nuvemConfigurada()) txt="";
+  else if(!sb) txt=n?(n+" alteração(ões) aguardando envio (sem conexão com a nuvem)"):"";
+  else if(!sessao) txt=n?(n+" alteração(ões) só neste aparelho. Entre na conta pra sincronizar."):"";
+  else if(syncRodando) txt="Sincronizando…";
+  else if(statusSync.erro) txt="Não sincronizou: "+statusSync.erro+(n?" ("+n+" aguardando envio)":"");
+  else if(n) txt=n+" aguardando envio…";
+  else if(statusSync.quando){
+    txt="Sincronizado às "+new Date(statusSync.quando).toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+  }
+  el.textContent=txt;
+}
+/* @@B-FIM */
 
 function pintarConta(){
   var semNuvem=document.getElementById("conta-sem-nuvem");
@@ -1018,16 +1220,7 @@ function pintarMais(){
     var b=document.createElement("span"); b.className="bolinha"; b.style.background=m.cor;
     var n=document.createElement("span"); n.className="nome"; n.textContent=m.nome;
     var x=document.createElement("button"); x.type="button"; x.className="mini perigo"; x.textContent="Excluir";
-    x.addEventListener("click",function(){
-      dados.materias=dados.materias.filter(function(o){return o.id!==m.id;});
-      dados.atividades.forEach(function(a){ if(a.materia===m.id) a.materia=""; });
-      salvar(); pintarTudo(); toast("Matéria excluída");
-      if(nuvemAtiva()){
-        sb.from("materias").delete().eq("id",m.id).then(function(r){
-          if(r.error) toast("Não sincronizou: "+r.error.message);
-        });
-      }
-    });
+    x.addEventListener("click",function(){ excluirMateria(m.id); });
     l.appendChild(b); l.appendChild(n); l.appendChild(x);
     lm.appendChild(l);
   });
@@ -1067,18 +1260,18 @@ function alternar(aid){
   var a=porId(aid); if(!a) return;
   a.concluida=!a.concluida;
   a.concluidaEm=a.concluida?Date.now():null;
-  salvar(); pintarTudo();
+  marcar("a",a.id,"upsert");
+  salvar(); pintarTudo(); pedirSync(200);
   if(a.concluida) toast("Feito ✓");
-  if(nuvemAtiva()){
-    operacoesEmVoo[aid]=true;
-    sb.from("atividades").update({
-      concluida:a.concluida,
-      concluida_em:a.concluida?new Date(a.concluidaEm).toISOString():null
-    }).eq("id",aid).then(function(r){
-      delete operacoesEmVoo[aid];
-      if(r.error) toast("Não sincronizou: "+r.error.message);
-    });
-  }
+}
+
+function excluirMateria(mid){
+  dados.atividades.forEach(function(a){
+    if(a.materia===mid){ a.materia=""; marcar("a",a.id,"upsert"); }
+  });
+  dados.materias=dados.materias.filter(function(o){ return o.id!==mid; });
+  marcar("m",mid,"delete");
+  salvar(); pintarTudo(); pedirSync(200); toast("Matéria excluída");
 }
 
 function abrirModal(aid){
@@ -1143,53 +1336,31 @@ function salvarForm(){
   if(editando){
     var aid=editando;
     var a=porId(aid);
+    if(!a){ fecharModal(); pintarTudo(); toast("Essa atividade não existe mais"); return; }
     a.titulo=titulo; a.data=data; a.materia=materiaSel; a.obs=obsVal;
-    salvar(); fecharModal(); pintarTudo();
+    marcar("a",aid,"upsert");
+    fecharModal(); salvar(); pintarTudo(); pedirSync(200);
     toast("Atividade salva");
-    if(nuvemAtiva()){
-      operacoesEmVoo[aid]=true;
-      sb.from("atividades").update({
-        titulo:titulo, data:data, materia_id:materiaSel||null, obs:obsVal||null
-      }).eq("id",aid).then(function(r){
-        delete operacoesEmVoo[aid];
-        if(r.error) toast("Não sincronizou: "+r.error.message);
-      });
-    }
   }else{
     var nova={
-      id:id(), titulo:titulo, data:data, materia:materiaSel,
-      obs:obsVal, concluida:false, concluidaEm:null, criado:Date.now(),
-      pendenteNuvem:nuvemAtiva()
+      id:uuid(), titulo:titulo, data:data, materia:materiaSel,
+      obs:obsVal, concluida:false, concluidaEm:null, criado:Date.now()
     };
     dados.atividades.push(nova);
+    marcar("a",nova.id,"upsert");
     if(tela==="agenda") diaFolha=data;
-    salvar(); fecharModal(); pintarTudo();
+    fecharModal(); salvar(); pintarTudo(); pedirSync(200);
     toast("Anotado na agenda");
-    if(nuvemAtiva()){
-      sb.from("atividades").insert({
-        user_id:sessao.user.id, titulo:titulo, data:data,
-        materia_id:materiaSel||null, obs:obsVal||null
-      }).select().single().then(function(r){
-        if(r.error){ toast("Salvo só neste aparelho: "+r.error.message); return; }
-        var local=porId(nova.id);
-        if(local){ local.id=r.data.id; local.pendenteNuvem=false; salvar(); }
-      });
-    }
   }
 }
 
 function excluir(){
   if(!editando) return;
   var aid=editando;
-  dados.atividades=dados.atividades.filter(function(a){return a.id!==aid;});
-  salvar(); fecharModal(); pintarTudo(); toast("Atividade excluída");
-  if(nuvemAtiva()){
-    exclusoesEmVoo[aid]=true;
-    sb.from("atividades").delete().eq("id",aid).then(function(r){
-      delete exclusoesEmVoo[aid];
-      if(r.error) toast("Não sincronizou: "+r.error.message);
-    });
-  }
+  dados.atividades=dados.atividades.filter(function(a){ return a.id!==aid; });
+  marcar("a",aid,"delete");
+  fecharModal(); salvar(); pintarTudo(); pedirSync(200);
+  toast("Atividade excluída");
 }
 
 /* ---------- navegação ---------- */
@@ -1272,17 +1443,11 @@ document.getElementById("mat-add").addEventListener("click",function(){
   var n=document.getElementById("mat-nome").value.trim();
   var cor=document.getElementById("mat-cor").value;
   if(!n){ toast("Escreva o nome da matéria"); return; }
-  var nova={id:id(),nome:n,cor:cor,pendenteNuvem:nuvemAtiva()};
+  var nova={id:uuid(),nome:n,cor:cor};
   dados.materias.push(nova);
+  marcar("m",nova.id,"upsert");
   document.getElementById("mat-nome").value="";
-  salvar(); pintarMais(); toast("Matéria criada");
-  if(nuvemAtiva()){
-    sb.from("materias").insert({user_id:sessao.user.id,nome:n,cor:cor}).select().single().then(function(r){
-      if(r.error){ toast("Salva só neste aparelho: "+r.error.message); return; }
-      var local=dados.materias.filter(function(m){return m.id===nova.id;})[0];
-      if(local){ local.id=r.data.id; local.pendenteNuvem=false; salvar(); }
-    });
-  }
+  salvar(); pintarMais(); pedirSync(200); toast("Matéria criada");
 });
 
 /* ---------- conta ---------- */
@@ -1309,9 +1474,28 @@ document.getElementById("c-entrar").addEventListener("click",function(){
     toast("Bem-vindo(a) de volta");
   });
 });
+document.getElementById("c-sync").addEventListener("click",function(){
+  if(!nuvemAtiva()) return;
+  toast("Sincronizando…");
+  pedirSync(0);
+});
 document.getElementById("c-sair").addEventListener("click",function(){
   if(!sb) return;
-  sb.auth.signOut().then(function(){ toast("Você saiu da conta"); });
+  function sair(){
+    sb.auth.signOut().then(function(){
+      // os dados desta conta continuam na nuvem; aqui volta ao estado inicial
+      var cfg=dados.config;
+      dados=novoDados(); dados.config=cfg; semear();
+      salvar(); pintarTudo(); pintarStatus(); toast("Você saiu da conta");
+    });
+  }
+  if(!Object.keys(dados.pendentes).length){ sair(); return; }
+  // tenta enviar o que falta antes de sair
+  sincronizar().then(function(){
+    var faltam=Object.keys(dados.pendentes).length;
+    if(faltam && !confirm(faltam+" alteração(ões) ainda não foram enviadas e serão perdidas se você sair. Sair mesmo assim?")) return;
+    sair();
+  });
 });
 
 Array.prototype.forEach.call(document.querySelectorAll("[data-tema]"),function(b){
@@ -1321,12 +1505,26 @@ Array.prototype.forEach.call(document.querySelectorAll("[data-tema]"),function(b
 });
 
 document.getElementById("copiar").addEventListener("click",function(){
-  var txt=JSON.stringify(dados);
+  var txt=JSON.stringify({atividades:dados.atividades,materias:dados.materias,config:dados.config});
   var ta=document.getElementById("backup");
   ta.classList.remove("oculto"); ta.value=txt; ta.select();
   if(navigator.clipboard) navigator.clipboard.writeText(txt).then(function(){ toast("Backup copiado"); },function(){ toast("Selecione e copie o texto"); });
   else toast("Selecione e copie o texto");
 });
+
+// restaurar = substituir tudo (inclusive na nuvem, se estiver logado)
+function restaurarBackup(d){
+  var imp=importar(d,true);
+  dados.atividades.forEach(function(a){ marcar("a",a.id,"delete"); });
+  dados.materias.forEach(function(m){ marcar("m",m.id,"delete"); });
+  dados.atividades=imp.atividades;
+  dados.materias=imp.materias;
+  imp.atividades.forEach(function(a){ marcar("a",a.id,"upsert"); });
+  imp.materias.forEach(function(m){ marcar("m",m.id,"upsert"); });
+  dados.config=Object.assign(dados.config,imp.config);
+  dados.semeado=true;
+  salvar(); aplicarTema(); pintarTudo(); pedirSync(0);
+}
 document.getElementById("restaurar").addEventListener("click",function(){
   var ta=document.getElementById("backup");
   if(ta.classList.contains("oculto") || !ta.value.trim()){
@@ -1337,18 +1535,19 @@ document.getElementById("restaurar").addEventListener("click",function(){
   try{
     var d=JSON.parse(ta.value);
     if(!Array.isArray(d.atividades)) throw 0;
-    dados.atividades=d.atividades;
-    dados.materias=Array.isArray(d.materias)?d.materias:dados.materias;
-    dados.config=Object.assign(dados.config,d.config||{});
-    salvar(); aplicarTema(); pintarTudo();
+    restaurarBackup(d);
     ta.value=""; ta.classList.add("oculto");
     toast("Dados restaurados");
   }catch(e){ toast("Esse texto não é um backup válido"); }
 });
 document.getElementById("limpar").addEventListener("click",function(){
-  if(!confirm("Apagar todas as atividades e matérias deste aparelho?")) return;
+  var msg=nuvemAtiva()?"Apagar todas as atividades e matérias, inclusive na nuvem?":"Apagar todas as atividades e matérias deste aparelho?";
+  if(!confirm(msg)) return;
+  dados.atividades.forEach(function(a){ marcar("a",a.id,"delete"); });
+  dados.materias.forEach(function(m){ marcar("m",m.id,"delete"); });
   dados.atividades=[]; dados.materias=[];
-  salvar(); carregar(); salvar(); pintarTudo(); toast("Tudo apagado");
+  dados.semeado=false; semear();
+  salvar(); pintarTudo(); pedirSync(0); toast("Tudo apagado");
 });
 
 /* ---------- início ---------- */
@@ -1357,17 +1556,22 @@ aplicarTema();
 pintarTudo();
 iniciarNuvem();
 iniciarCookies();
+pintarStatus();
 document.getElementById("versao-app").textContent="versão "+VERSAO_APP;
-window.addEventListener("online",sincronizarPendentes);
 
-// toda vez que a pessoa volta pro app (desbloqueia o celular, troca de aba
-// e volta, etc.), busca de novo na nuvem — assim o que foi criado em
-// outro aparelho aparece sem precisar fechar e abrir o app de novo.
+// gatilhos de sincronização: voltar pro app, voltar a ficar online,
+// e de tempos em tempos enquanto o app está na tela
+window.addEventListener("online",function(){ pedirSync(0); });
 document.addEventListener("visibilitychange",function(){
-  if(document.visibilityState==="visible" && nuvemAtiva()) baixarDaNuvem(true);
+  if(document.visibilityState==="visible") pedirSync(0);
 });
-window.addEventListener("focus",function(){
-  if(nuvemAtiva()) baixarDaNuvem(true);
+window.addEventListener("focus",function(){ pedirSync(0); });
+setInterval(function(){ if(document.visibilityState==="visible") pedirSync(0); },45000);
+
+// se outra aba/janela do app alterar os dados, acompanha (não sobrescreve)
+window.addEventListener("storage",function(e){
+  if(e.key!==CHAVE || !e.newValue) return;
+  try{ aplicarV2(JSON.parse(e.newValue)); aplicarTema(); pintarTudo(); pintarStatus(); }catch(x){}
 });
 })();
 </script>
