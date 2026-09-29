@@ -562,7 +562,7 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
 /* @@A-INI */
 var CHAVE="agenda.v2";
 var CHAVE_ANTIGA="agenda.v1";
-var VERSAO_APP="2026-09-27.1";
+var VERSAO_APP="2026-09-28.1";
 
 function novoDados(){
   return {
@@ -895,9 +895,11 @@ function reconciliarMaterias(cMat){
 }
 
 // o que está na fila local SEMPRE vence; o resto vem da nuvem
+var GRACA_MS=15000; // nenhum item com menos de 15s de vida pode sumir na mesclagem
 function mesclar(cMat,cAti){
   reconciliarMaterias(cMat);
   var pend=dados.pendentes;
+  var agora=Date.now();
 
   var vistasM={}, novasM=[];
   cMat.forEach(function(row){
@@ -926,7 +928,13 @@ function mesclar(cMat,cAti){
   dados.atividades.forEach(function(a){
     if(vistasA[a.id]) return;
     var p=pend["a:"+a.id];
-    if(p && p.op==="upsert") novasA.push(a);
+    if(p && p.op==="upsert"){ novasA.push(a); return; }
+    // rede de segurança: nasceu há pouco e a nuvem ainda não confirma —
+    // mantém na tela e manda tentar de novo, em vez de deixar sumir
+    if((agora-(a.criado||0))<GRACA_MS){
+      novasA.push(a); marcar("a",a.id,"upsert"); syncDeNovo=true;
+    }
+    // senão: passou da graça e a nuvem não tem mais → foi apagada em outro aparelho
   });
   dados.atividades=novasA;
 
