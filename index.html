@@ -19,7 +19,7 @@ gtag('js', new Date());
 gtag('config', 'G-MCW9158RCP');
 </script>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Agenda</title>
 
 <link rel="manifest" href="manifest.json">
@@ -101,12 +101,14 @@ gtag('config', 'G-MCW9158RCP');
 
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
+html{touch-action:manipulation}
 body{
   font-family:var(--ui);
   background:var(--fundo);
   color:var(--texto);
   -webkit-font-smoothing:antialiased;
   padding-bottom:calc(76px + env(safe-area-inset-bottom));
+  touch-action:manipulation;
 }
 button{font-family:inherit;cursor:pointer}
 :focus-visible{outline:3px solid var(--acento);outline-offset:2px;border-radius:6px}
@@ -290,7 +292,7 @@ button{font-family:inherit;cursor:pointer}
 .form-mat input[type=text]{flex:1}
 .form-mat input[type=color]{width:44px;height:42px;padding:2px;border:1px solid var(--borda);border-radius:10px;background:var(--superficie)}
 
-input[type=text],input[type=date],input[type=time],select,textarea{
+input[type=text],input[type=date],input[type=time],input[type=email],input[type=password],select,textarea{
   width:100%;font-family:var(--ui);font-size:16px;color:var(--texto);
   background:var(--superficie);border:1px solid var(--borda);
   border-radius:10px;padding:11px 12px
@@ -562,7 +564,7 @@ label.campo .rot{display:block;font-size:13px;font-weight:700;margin-bottom:5px;
 /* @@A-INI */
 var CHAVE="agenda.v2";
 var CHAVE_ANTIGA="agenda.v1";
-var VERSAO_APP="2026-09-28.1";
+var VERSAO_APP="2026-09-28.3";
 
 function novoDados(){
   return {
@@ -604,7 +606,7 @@ function marcar(tipo,idItem,op){
 
 function semear(){
   [["Matemática","#FFD66B"],["Português","#A8E6CF"],["História","#F8B9C6"]].forEach(function(p){
-    var m={id:uuid(),nome:p[0],cor:p[1],padrao:true};
+    var m={id:uuid(),nome:p[0],cor:p[1],padrao:true,criado:Date.now()};
     dados.materias.push(m);
     marcar("m",m.id,"upsert");
   });
@@ -623,7 +625,7 @@ function importar(d,novosIds){
     var velho=m.id;
     var novo=(!novosIds && idDeVerdade(velho))?velho:uuid();
     mapa[velho]=novo;
-    r.materias.push({id:novo,nome:String(m.nome),cor:m.cor||"#FFD66B",padrao:!!m.padrao});
+    r.materias.push({id:novo,nome:String(m.nome),cor:m.cor||"#FFD66B",padrao:!!m.padrao,criado:Date.now()});
     if(novosIds || !idDeVerdade(velho)) sujar("m",novo);
   });
   (Array.isArray(d.atividades)?d.atividades:[]).forEach(function(a){
@@ -912,7 +914,11 @@ function mesclar(cMat,cAti){
   dados.materias.forEach(function(m){
     if(vistasM[m.id]) return;
     var p=pend["m:"+m.id];
-    if(p && p.op==="upsert") novasM.push(m);            // nova, ainda não enviada
+    if(p && p.op==="upsert"){ novasM.push(m); return; }  // nova, ainda não enviada
+    // rede de segurança: nasceu há pouco, nuvem ainda não confirma — mantém e tenta de novo
+    if((agora-(m.criado||0))<GRACA_MS){
+      novasM.push(m); marcar("m",m.id,"upsert"); syncDeNovo=true; return;
+    }
     // senão: foi apagada em outro aparelho, então some daqui também
   });
   dados.materias=novasM;
@@ -1451,7 +1457,7 @@ document.getElementById("mat-add").addEventListener("click",function(){
   var n=document.getElementById("mat-nome").value.trim();
   var cor=document.getElementById("mat-cor").value;
   if(!n){ toast("Escreva o nome da matéria"); return; }
-  var nova={id:uuid(),nome:n,cor:cor};
+  var nova={id:uuid(),nome:n,cor:cor,criado:Date.now()};
   dados.materias.push(nova);
   marcar("m",nova.id,"upsert");
   document.getElementById("mat-nome").value="";
